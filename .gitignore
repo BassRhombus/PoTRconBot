@@ -1,0 +1,26 @@
+# Environment and secrets
+.env
+config.js
+commands.json
+clearCommands.js
+
+# Dependencies
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+

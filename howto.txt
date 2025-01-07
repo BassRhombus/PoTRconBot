@@ -1,0 +1,20 @@
+Use the following commands to configure the bot:
+
+/setchatchannel - Set the channel for monitoring game chat
+/addserver - Add a new server configuration
+/removeserver - Remove a server configuration
+/listservers - List all configured servers
+
+
+Custom Commands
+Create custom commands that respond to in-game triggers:
+
+/addcommand - Create a new custom command
+/removecommand - Remove a custom command
+/listcommands - List all custom commands
+Placeholders
+{player} - Player name
+{ID} - Player's AlderonID
+Admin Commands
+/restart - Restart a specific server
+/healall - Heal all players on a server
