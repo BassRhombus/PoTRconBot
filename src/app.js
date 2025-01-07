@@ -160,9 +160,42 @@ const commands = [
         ]
     },
     {
+        name: 'setspawnchannel',
+        description: 'Set the channel for monitoring spawn messages',
+        default_member_permissions: '8',
+        options: [
+            {
+                name: 'channel',
+                description: 'The channel to monitor for spawn messages',
+                type: 7,
+                required: true,
+                channel_types: [0]
+            }
+        ]
+    },
+    {
+        name: 'spawn',
+        description: 'Set spawn point for teleporting players',
+        options: [
+            {
+                name: 'location',
+                description: 'Coordinates for spawn (x,y,z)',
+                type: 3,
+                required: true
+            },
+            {
+                name: 'server',
+                description: 'Server to set spawn on',
+                type: 3,
+                required: true,
+                choices: serverChoices
+            }
+        ]
+    },
+    {
         name: 'addserver',
         description: 'Add a new server to the configuration',
-        default_member_permissions: '8', // Admin only
+        default_member_permissions: '8',
         options: [
             {
                 name: 'name',
@@ -179,7 +212,7 @@ const commands = [
             {
                 name: 'port',
                 description: 'Server RCON port',
-                type: 4, // INTEGER
+                type: 4,
                 required: true
             },
             {
@@ -193,7 +226,7 @@ const commands = [
     {
         name: 'removeserver',
         description: 'Remove a server from the configuration',
-        default_member_permissions: '8', // Admin only
+        default_member_permissions: '8',
         options: [
             {
                 name: 'name',
@@ -207,11 +240,10 @@ const commands = [
     {
         name: 'listservers',
         description: 'List all configured servers',
-        default_member_permissions: '8' // Admin only
+        default_member_permissions: '8'
     }
 ];
 
-// Add this function to get server choices for autocomplete
 function getServerChoices() {
     return Object.keys(config.servers).map(server => ({
         name: server,
@@ -219,7 +251,6 @@ function getServerChoices() {
     }));
 }
 
-// Update serverChoices to be dynamic
 function getServerChoicesForCommands() {
     return Object.keys(config.servers).map(server => ({
         name: server,
@@ -275,6 +306,7 @@ bot.client.once('ready', async () => {
     }
 });
 
+// Chat monitoring for custom commands
 bot.client.on('messageCreate', async message => {
     if (message.channelId !== config.chatChannelId) return;
     if (!message.embeds || message.embeds.length === 0) return;
@@ -299,15 +331,10 @@ bot.client.on('messageCreate', async message => {
         const playerID = playerIdMatch[1];
         const playerName = playerNameMatch ? playerNameMatch[1].trim() : '';
 
-        console.log('Parsed message:', messageContent);
-        console.log('Parsed ID:', playerID);
-        console.log('Parsed player name:', playerName);
-
         if (!messageContent.startsWith('$')) return;
 
         const trigger = messageContent.split(' ')[0].substring(1).toLowerCase();
-        console.log('Command trigger:', trigger);
-
+        
         if (customCommands.has(trigger)) {
             const commandData = customCommands.get(trigger);
             let commandToExecute = commandData.command;
@@ -318,7 +345,6 @@ bot.client.on('messageCreate', async message => {
 
             if (commandData.server === 'all') {
                 for (const serverName of Object.keys(config.servers)) {
-                    console.log(`Executing command on ${serverName}:`, commandToExecute);
                     try {
                         await bot.executeCommand(serverName, commandToExecute);
                         if (commandData.whisperMessage) {
@@ -327,13 +353,11 @@ bot.client.on('messageCreate', async message => {
                                 .replace(/{player}/g, playerName);
                             await bot.executeCommand(serverName, whisperCommand);
                         }
-                        console.log(`Successfully executed command on ${serverName}`);
                     } catch (error) {
                         console.error(`Error executing command on ${serverName}:`, error);
                     }
                 }
             } else {
-                console.log(`Executing command on ${commandData.server}:`, commandToExecute);
                 try {
                     await bot.executeCommand(commandData.server, commandToExecute);
                     if (commandData.whisperMessage) {
@@ -342,17 +366,66 @@ bot.client.on('messageCreate', async message => {
                             .replace(/{player}/g, playerName);
                         await bot.executeCommand(commandData.server, whisperCommand);
                     }
-                    console.log(`Successfully executed command on ${commandData.server}`);
                 } catch (error) {
                     console.error(`Error executing command on ${commandData.server}:`, error);
                 }
             }
-        } else {
-            console.log('Command not found:', trigger);
         }
     } catch (error) {
         console.error('Error processing chat message:', error);
-        console.error('Error details:', error.message);
+    }
+});
+
+// Spawn monitoring
+bot.client.on('messageCreate', async message => {
+    if (message.channelId === config.spawnChannelId) {
+        try {
+            console.log('\n=== New Message in Spawn Channel ===');
+            
+            if (!message.embeds || message.embeds.length === 0) {
+                console.log('No embeds found in message');
+                return;
+            }
+
+            const embedContent = message.embeds[0].description;
+            if (!embedContent) {
+                console.log('No description in embed');
+                return;
+            }
+
+            console.log('\nEmbed Description:', embedContent);
+
+            // Updated pattern to match PlayerAlderonId
+            const playerIdMatch = embedContent.match(/\*\*PlayerAlderonId:\*\* ([0-9]{3}-[0-9]{3}-[0-9]{3})/);
+            if (!playerIdMatch) {
+                console.log('No PlayerAlderonId found in embed');
+                return;
+            }
+
+            const playerID = playerIdMatch[1];
+            console.log('Found PlayerID:', playerID);
+
+            // Also get player name for logging purposes
+            const playerNameMatch = embedContent.match(/\*\*PlayerName:\*\* ([^\*]+)/);
+            const playerName = playerNameMatch ? playerNameMatch[1].trim() : 'Unknown Player';
+
+            for (const [serverName, spawnLocation] of Object.entries(config.spawnLocations)) {
+                try {
+                    if (spawnLocation) {
+                        const teleportCommand = `teleport ${playerID} ${spawnLocation}`;
+                        console.log(`\nExecuting command for ${playerName} on ${serverName}:`, teleportCommand);
+                        await bot.executeCommand(serverName, teleportCommand);
+                        console.log(`Successfully teleported ${playerName} (${playerID}) to ${spawnLocation} on ${serverName}`);
+                    }
+                } catch (error) {
+                    console.error(`Failed to teleport player on ${serverName}:`, error);
+                }
+            }
+            console.log('=== End of Spawn Processing ===\n');
+        } catch (error) {
+            console.error('Error processing spawn message:', error);
+            console.error('Error details:', error.stack);
+        }
     }
 });
 
@@ -384,9 +457,6 @@ bot.client.on('interactionCreate', async interaction => {
 
     if (!interaction.isCommand()) return;
 
-    console.log('Received command:', interaction.commandName);
-    console.log('From user:', interaction.user.tag);
-
     try {
         switch (interaction.commandName) {
             case 'restart':
@@ -417,7 +487,6 @@ bot.client.on('interactionCreate', async interaction => {
 
                 const serverMsg = specificServer ? `Server: ${specificServer}` : 'All Servers';
                 const whisperMsg = whisperMessage ? `\nWhisper: ${whisperMessage}` : '';
-                console.log(`Added custom command: $${trigger} -> ${command} (${serverMsg})${whisperMsg}`);
                 await interaction.reply({
                     content: `Added custom command: $${trigger} -> ${command} (${serverMsg})${whisperMsg}`,
                     ephemeral: true
@@ -429,7 +498,7 @@ bot.client.on('interactionCreate', async interaction => {
                 if (customCommands.has(triggerToRemove)) {
                     const commandData = customCommands.get(triggerToRemove);
                     const serverMsg = commandData.server === 'all' ? 'All Servers' : `Server: ${commandData.server}`;
-                    const whisperMsg = commandData.whisperMessage ? `\nWhisper: ${commandData.whisperMessage}` : '';
+                    const whisperMsg = commandData.whisperMessage ? `\n                     : ${commandData.whisperMessage}` : '';
                     
                     customCommands.delete(triggerToRemove);
                     await saveCommands();
@@ -492,6 +561,62 @@ bot.client.on('interactionCreate', async interaction => {
                 }
                 break;
 
+            case 'setspawnchannel':
+                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
+                    await interaction.reply({
+                        content: 'You need administrator permissions to use this command.',
+                        ephemeral: true
+                    });
+                    return;
+                }
+
+                await interaction.deferReply({ ephemeral: true });
+
+                const newSpawnChannelId = interaction.options.getChannel('channel').id;
+                config.spawnChannelId = newSpawnChannelId;
+
+                try {
+                    await updateConfig(config);
+                    await interaction.editReply({
+                        content: `Successfully set spawn monitoring channel to <#${newSpawnChannelId}>`,
+                        ephemeral: true
+                    });
+                } catch (error) {
+                    console.error('Error setting spawn channel:', error);
+                    await interaction.editReply({
+                        content: `Error setting spawn channel: ${error.message}`,
+                        ephemeral: true
+                    });
+                }
+                break;
+
+            case 'spawn':
+                const spawnLocation = interaction.options.getString('location');
+                const targetServer = interaction.options.getString('server');
+                
+                // Initialize spawnLocations if it doesn't exist
+                if (!config.spawnLocations) {
+                    config.spawnLocations = {};
+                }
+                
+                // Store the spawn location in config
+                config.spawnLocations[targetServer] = spawnLocation;
+                
+                try {
+                    await updateConfig(config);
+                    await interaction.reply({
+                        content: `Spawn location set to ${spawnLocation} for server ${targetServer}`,
+                        ephemeral: true
+                    });
+                } catch (error) {
+                    console.error('Error saving spawn location:', error);
+                    await interaction.reply({
+                        content: `Error saving spawn location: ${error.message}`,
+                        ephemeral: true
+                    });
+                }
+                break;
+
             case 'addserver':
                 if (!interaction.member.permissions.has('ADMINISTRATOR')) {
                     await interaction.reply({
@@ -522,7 +647,7 @@ bot.client.on('interactionCreate', async interaction => {
 
                 try {
                     await updateConfig(config);
-                    await bot.connect(serverName); // Try to connect to new server
+                    await bot.connect(serverName);
 
                     await interaction.reply({
                         content: `Successfully added server: ${serverName}`,
@@ -558,7 +683,6 @@ bot.client.on('interactionCreate', async interaction => {
                 }
 
                 try {
-                    // Disconnect RCON if connected
                     if (bot.rconConnections.has(serverToRemove)) {
                         bot.rconConnections.get(serverToRemove).disconnect();
                         bot.rconConnections.delete(serverToRemove);
