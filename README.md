@@ -8,6 +8,7 @@ A Discord bot for managing Path of Titans servers via RCON commands.
 - Custom command system with placeholders
 - Multi-server support
 - Automated server health checks
+- (as of right now, only works with Discord webhooks)
 
 ## Prerequisites
 - Node.js 16.x or higher
