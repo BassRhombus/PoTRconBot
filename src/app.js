@@ -8,6 +8,8 @@ const path = require('path');
 const COMMANDS_FILE = path.join(__dirname, 'commands.json');
 const customCommands = new Map();
 
+const ADMIN_PERMISSION = '8';
+
 async function loadCommands() {
     try {
         const data = await fs.readFile(COMMANDS_FILE, 'utf8');
@@ -74,6 +76,7 @@ const commands = [
     {
         name: 'restart',
         description: 'Restart the server',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'server',
@@ -87,6 +90,7 @@ const commands = [
     {
         name: 'healall',
         description: 'Heal all players on the server',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'server',
@@ -100,6 +104,7 @@ const commands = [
     {
         name: 'addcommand',
         description: 'Add a custom in-game command (executes on all servers if no server specified)',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'trigger',
@@ -131,6 +136,7 @@ const commands = [
     {
         name: 'removecommand',
         description: 'Remove a custom in-game command',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'trigger',
@@ -144,11 +150,12 @@ const commands = [
     {
         name: 'listcommands',
         description: 'List all custom in-game commands',
+        default_member_permissions: ADMIN_PERMISSION
     },
     {
         name: 'setchatchannel',
         description: 'Set the channel for monitoring game chat',
-        default_member_permissions: '8',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'channel',
@@ -162,7 +169,7 @@ const commands = [
     {
         name: 'setspawnchannel',
         description: 'Set the channel for monitoring spawn messages',
-        default_member_permissions: '8',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'channel',
@@ -176,6 +183,7 @@ const commands = [
     {
         name: 'spawn',
         description: 'Set spawn point for teleporting players',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'location',
@@ -195,7 +203,7 @@ const commands = [
     {
         name: 'addserver',
         description: 'Add a new server to the configuration',
-        default_member_permissions: '8',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'name',
@@ -226,7 +234,7 @@ const commands = [
     {
         name: 'removeserver',
         description: 'Remove a server from the configuration',
-        default_member_permissions: '8',
+        default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
                 name: 'name',
@@ -240,7 +248,7 @@ const commands = [
     {
         name: 'listservers',
         description: 'List all configured servers',
-        default_member_permissions: '8'
+        default_member_permissions: ADMIN_PERMISSION
     }
 ];
 
@@ -277,26 +285,24 @@ bot.client.once('ready', async () => {
 
         const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
         const clientId = bot.client.user.id;
-        const guildId = process.env.GUILD_ID;
 
-        console.log('Started refreshing guild (/) commands.');
+        console.log('Started refreshing global (/) commands.');
         console.log('Bot ID:', clientId);
-        console.log('Guild ID:', guildId);
 
         try {
-            console.log('Clearing existing guild commands...');
+            console.log('Clearing existing global commands...');
             await rest.put(
-                Routes.applicationGuildCommands(clientId, guildId),
+                Routes.applicationCommands(clientId),
                 { body: [] }
             );
 
-            console.log('Registering new guild commands...');
+            console.log('Registering new global commands...');
             const result = await rest.put(
-                Routes.applicationGuildCommands(clientId, guildId),
+                Routes.applicationCommands(clientId),
                 { body: commands }
             );
 
-            console.log(`Successfully reloaded ${result.length} guild (/) commands.`);
+            console.log(`Successfully reloaded ${result.length} global (/) commands.`);
         } catch (error) {
             console.error('Error managing commands:', error);
         }
@@ -334,7 +340,7 @@ bot.client.on('messageCreate', async message => {
         if (!messageContent.startsWith('$')) return;
 
         const trigger = messageContent.split(' ')[0].substring(1).toLowerCase();
-        
+
         if (customCommands.has(trigger)) {
             const commandData = customCommands.get(trigger);
             let commandToExecute = commandData.command;
@@ -381,7 +387,7 @@ bot.client.on('messageCreate', async message => {
     if (message.channelId === config.spawnChannelId) {
         try {
             console.log('\n=== New Message in Spawn Channel ===');
-            
+
             if (!message.embeds || message.embeds.length === 0) {
                 console.log('No embeds found in message');
                 return;
@@ -434,9 +440,9 @@ bot.client.on('interactionCreate', async interaction => {
         if (interaction.commandName === 'removecommand') {
             const choices = getCommandChoices();
             const focused = interaction.options.getFocused().toLowerCase();
-            
-            const filtered = choices.filter(choice => 
-                choice.name.toLowerCase().includes(focused) || 
+
+            const filtered = choices.filter(choice =>
+                choice.name.toLowerCase().includes(focused) ||
                 choice.value.toLowerCase().includes(focused)
             );
 
@@ -445,8 +451,8 @@ bot.client.on('interactionCreate', async interaction => {
         else if (interaction.commandName === 'removeserver') {
             const choices = getServerChoices();
             const focused = interaction.options.getFocused().toLowerCase();
-            
-            const filtered = choices.filter(choice => 
+
+            const filtered = choices.filter(choice =>
                 choice.name.toLowerCase().includes(focused)
             );
 
@@ -499,7 +505,7 @@ bot.client.on('interactionCreate', async interaction => {
                     const commandData = customCommands.get(triggerToRemove);
                     const serverMsg = commandData.server === 'all' ? 'All Servers' : `Server: ${commandData.server}`;
                     const whisperMsg = commandData.whisperMessage ? `\n                     : ${commandData.whisperMessage}` : '';
-                    
+
                     customCommands.delete(triggerToRemove);
                     await saveCommands();
 
@@ -531,23 +537,11 @@ bot.client.on('interactionCreate', async interaction => {
                 break;
 
             case 'setchatchannel':
-                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-                    await interaction.reply({
-                        content: 'You need administrator permissions to use this command.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
                 await interaction.deferReply({ ephemeral: true });
-
                 const newChannelId = interaction.options.getChannel('channel').id;
-
                 config.chatChannelId = newChannelId;
-
                 try {
                     await updateConfig(config);
-
                     await interaction.editReply({
                         content: `Successfully set chat monitoring channel to <#${newChannelId}>`,
                         ephemeral: true
@@ -562,19 +556,9 @@ bot.client.on('interactionCreate', async interaction => {
                 break;
 
             case 'setspawnchannel':
-                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-                    await interaction.reply({
-                        content: 'You need administrator permissions to use this command.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
                 await interaction.deferReply({ ephemeral: true });
-
                 const newSpawnChannelId = interaction.options.getChannel('channel').id;
                 config.spawnChannelId = newSpawnChannelId;
-
                 try {
                     await updateConfig(config);
                     await interaction.editReply({
@@ -593,15 +577,15 @@ bot.client.on('interactionCreate', async interaction => {
             case 'spawn':
                 const spawnLocation = interaction.options.getString('location');
                 const targetServer = interaction.options.getString('server');
-                
+
                 // Initialize spawnLocations if it doesn't exist
                 if (!config.spawnLocations) {
                     config.spawnLocations = {};
                 }
-                
+
                 // Store the spawn location in config
                 config.spawnLocations[targetServer] = spawnLocation;
-                
+
                 try {
                     await updateConfig(config);
                     await interaction.reply({
@@ -618,14 +602,6 @@ bot.client.on('interactionCreate', async interaction => {
                 break;
 
             case 'addserver':
-                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-                    await interaction.reply({
-                        content: 'You need administrator permissions to use this command.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
                 const serverName = interaction.options.getString('name');
                 const host = interaction.options.getString('host');
                 const port = interaction.options.getInteger('port');
@@ -664,14 +640,6 @@ bot.client.on('interactionCreate', async interaction => {
                 break;
 
             case 'removeserver':
-                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-                    await interaction.reply({
-                        content: 'You need administrator permissions to use this command.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
                 const serverToRemove = interaction.options.getString('name');
 
                 if (!config.servers[serverToRemove]) {
@@ -704,14 +672,6 @@ bot.client.on('interactionCreate', async interaction => {
                 break;
 
             case 'listservers':
-                if (!interaction.member.permissions.has('ADMINISTRATOR')) {
-                    await interaction.reply({
-                        content: 'You need administrator permissions to use this command.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
                 const serverList = Object.entries(config.servers)
                     .map(([name, data]) => `${name}\n  Host: ${data.host}\n  Port: ${data.port}`)
                     .join('\n\n');
