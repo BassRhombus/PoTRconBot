@@ -7,17 +7,39 @@ const path = require('path');
 
 const COMMANDS_FILE = path.join(__dirname, 'commands.json');
 const customCommands = new Map();
-
 const ADMIN_PERMISSION = '8';
+
+function getServerChoices(guildId) {
+    if (!config.servers || !config.servers[guildId]) return [];
+    return Object.keys(config.servers[guildId]).map(server => ({
+        name: server,
+        value: server
+    }));
+}
+
+function getCommandChoices(guildId) {
+    if (!config.commands || !config.commands[guildId]) return [];
+    return Object.keys(config.commands[guildId]).map(trigger => ({
+        name: `$${trigger}`,
+        value: trigger
+    }));
+}
 
 async function loadCommands() {
     try {
         const data = await fs.readFile(COMMANDS_FILE, 'utf8');
         const json = JSON.parse(data);
-        Object.entries(json.customCommands).forEach(([trigger, data]) => {
-            customCommands.set(trigger, data);
-        });
-        console.log('Loaded custom commands:', customCommands);
+        if (json.guildCommands) {
+            Object.entries(json.guildCommands).forEach(([guildId, commands]) => {
+                if (!customCommands.has(guildId)) {
+                    customCommands.set(guildId, new Map());
+                }
+                Object.entries(commands).forEach(([trigger, data]) => {
+                    customCommands.get(guildId).set(trigger, data);
+                });
+            });
+        }
+        console.log('Loaded guild-specific commands:', customCommands);
     } catch (error) {
         if (error.code === 'ENOENT') {
             await saveCommands();
@@ -29,11 +51,16 @@ async function loadCommands() {
 
 async function saveCommands() {
     try {
+        const guildCommands = {};
+        customCommands.forEach((commands, guildId) => {
+            guildCommands[guildId] = Object.fromEntries(commands);
+        });
+        
         const data = {
-            customCommands: Object.fromEntries(customCommands)
+            guildCommands
         };
         await fs.writeFile(COMMANDS_FILE, JSON.stringify(data, null, 2));
-        console.log('Saved custom commands to file');
+        console.log('Saved guild-specific commands to file');
     } catch (error) {
         console.error('Error saving commands:', error);
     }
@@ -44,7 +71,7 @@ async function updateConfig(newConfig) {
         const configPath = path.join(__dirname, 'config.js');
         const configContent = `const config = ${JSON.stringify(newConfig, null, 2)};
   
-  module.exports = { config };`;
+module.exports = { config };`;
 
         await fs.writeFile(configPath, configContent, 'utf8');
         console.log('Config file updated successfully');
@@ -53,24 +80,6 @@ async function updateConfig(newConfig) {
         throw error;
     }
 }
-
-function getCommandChoices() {
-    return Array.from(customCommands.keys()).map(trigger => ({
-        name: `$${trigger}`,
-        value: trigger
-    }));
-}
-
-const serverChoices = [
-    {
-        name: 'Prehistoric Party',
-        value: 'Prehistoric Party'
-    },
-    {
-        name: 'Prehistoric Party Events',
-        value: 'Prehistoric Party Events'
-    }
-];
 
 const commands = [
     {
@@ -83,7 +92,7 @@ const commands = [
                 description: 'Server to restart',
                 type: 3,
                 required: true,
-                choices: serverChoices
+                autocomplete: true
             }
         ]
     },
@@ -97,13 +106,13 @@ const commands = [
                 description: 'Server to execute healall on',
                 type: 3,
                 required: true,
-                choices: serverChoices
+                autocomplete: true
             }
         ]
     },
     {
         name: 'addcommand',
-        description: 'Add a custom in-game command (executes on all servers if no server specified)',
+        description: 'Add a custom in-game command',
         default_member_permissions: ADMIN_PERMISSION,
         options: [
             {
@@ -123,7 +132,7 @@ const commands = [
                 description: 'Specific server to execute on (leave empty for all servers)',
                 type: 3,
                 required: false,
-                choices: serverChoices
+                autocomplete: true
             },
             {
                 name: 'whispermessage',
@@ -196,7 +205,7 @@ const commands = [
                 description: 'Server to set spawn on',
                 type: 3,
                 required: true,
-                choices: serverChoices
+                autocomplete: true
             }
         ]
     },
@@ -251,157 +260,492 @@ const commands = [
         default_member_permissions: ADMIN_PERMISSION
     }
 ];
-
-function getServerChoices() {
-    return Object.keys(config.servers).map(server => ({
-        name: server,
-        value: server
-    }));
-}
-
-function getServerChoicesForCommands() {
-    return Object.keys(config.servers).map(server => ({
-        name: server,
-        value: server
-    }));
-}
-
 bot.client.once('ready', async () => {
-    console.log('Bot is ready!');
-
-    await loadCommands();
-
     try {
-        console.log('Attempting RCON connections...');
-        for (const server of Object.keys(config.servers)) {
+        console.log('Bot is starting up...');
+        console.log(`Logged in as ${bot.client.user.tag}`);
+
+        // Load commands first
+        console.log('Loading custom commands...');
+        await loadCommands();
+        console.log('Custom commands loaded successfully');
+
+        // Initialize configurations with logging
+        console.log('Initializing configurations...');
+        if (!config.servers) {
+            config.servers = {};
+            console.log('Initialized empty servers configuration');
+        }
+        if (!config.commands) {
+            config.commands = {};
+            console.log('Initialized empty commands configuration');
+        }
+        if (!config.chatChannelIds) {
+            config.chatChannelIds = {};
+            console.log('Initialized empty chat channel IDs configuration');
+        }
+        if (!config.spawnChannelIds) {
+            config.spawnChannelIds = {};
+            console.log('Initialized empty spawn channel IDs configuration');
+        }
+        if (!config.spawnLocations) {
+            config.spawnLocations = {};
+            console.log('Initialized empty spawn locations configuration');
+        }
+
+        // Register commands
+        console.log('Starting command registration process...');
+        const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
+        const clientId = bot.client.user.id;
+        console.log(`Bot Client ID: ${clientId}`);
+
+        // Fetch guilds with error handling
+        console.log('Fetching guild list...');
+        let guilds;
+        try {
+            guilds = await bot.client.guilds.fetch();
+            console.log(`Found ${guilds.size} guilds`);
+        } catch (error) {
+            console.error('Failed to fetch guilds:', error);
+            guilds = new Map(); // Empty map as fallback
+        }
+
+        // Register commands for each guild
+        for (const [guildId, guild] of guilds) {
+            console.log(`Processing guild ${guildId}...`);
             try {
-                await bot.connect(server);
-                const testResult = await bot.executeCommand(server, 'listplayers');
-                console.log(`Test command result for ${server}:`, testResult);
+                console.log(`Registering commands for guild ${guildId}...`);
+                const result = await rest.put(
+                    Routes.applicationGuildCommands(clientId, guildId),
+                    { body: commands }
+                );
+                console.log(`Successfully registered ${result.length} commands for guild ${guildId}`);
             } catch (error) {
-                console.error(`Failed to connect to ${server}:`, error);
+                console.error(`Failed to register commands for guild ${guildId}:`, error);
             }
         }
 
-        const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
-        const clientId = bot.client.user.id;
-
-        console.log('Started refreshing global (/) commands.');
-        console.log('Bot ID:', clientId);
-
-        try {
-            console.log('Clearing existing global commands...');
-            await rest.put(
-                Routes.applicationCommands(clientId),
-                { body: [] }
-            );
-
-            console.log('Registering new global commands...');
-            const result = await rest.put(
-                Routes.applicationCommands(clientId),
-                { body: commands }
-            );
-
-            console.log(`Successfully reloaded ${result.length} global (/) commands.`);
-        } catch (error) {
-            console.error('Error managing commands:', error);
+        // Attempt RCON connections
+        console.log('\nAttempting RCON connections...');
+        for (const [guildId, servers] of Object.entries(config.servers)) {
+            console.log(`Processing RCON connections for guild ${guildId}...`);
+            
+            if (!customCommands.has(guildId)) {
+                customCommands.set(guildId, new Map());
+                console.log(`Initialized custom commands map for guild ${guildId}`);
+            }
+            
+            for (const [serverName, serverConfig] of Object.entries(servers)) {
+                try {
+                    console.log(`Connecting to server ${serverName} in guild ${guildId}...`);
+                    await bot.connect(guildId, serverName);
+                    console.log(`Successfully connected to ${serverName}`);
+                    
+                    const testResult = await bot.executeCommand(guildId, serverName, 'listplayers');
+                    console.log(`Test command result for ${serverName}:`, testResult);
+                } catch (error) {
+                    console.error(`Failed to connect to ${serverName} in guild ${guildId}:`, error);
+                }
+            }
         }
 
+        console.log('\nBot initialization complete!');
     } catch (error) {
-        console.error('Error in setup:', error);
+        console.error('Critical error during bot initialization:', error);
     }
 });
 
-// Chat monitoring for custom commands
-bot.client.on('messageCreate', async message => {
-    if (message.channelId !== config.chatChannelId) return;
-    if (!message.embeds || message.embeds.length === 0) return;
+// Add immediate error handlers
+bot.client.on('error', error => {
+    console.error('Discord client error:', error);
+});
 
-    const embedContent = message.embeds[0].description;
-    if (!embedContent) return;
+process.on('unhandledRejection', (error) => {
+    console.error('Unhandled promise rejection:', error);
+});
 
-    console.log('Received embed in monitoring channel:', embedContent);
+process.on('uncaughtException', (error) => {
+    console.error('Uncaught exception:', error);
+});
+
+// Modified login with error handling
+console.log('Attempting to log in...');
+bot.client.login(process.env.BOT_TOKEN).catch(error => {
+    console.error('Failed to login:', error);
+    process.exit(1);
+});
+
+bot.client.on('guildCreate', async (guild) => {
+    try {
+        const rest = new REST({ version: '10' }).setToken(process.env.BOT_TOKEN);
+        const clientId = bot.client.user.id;
+
+        console.log(`Registering commands for new guild ${guild.id}...`);
+        await rest.put(
+            Routes.applicationGuildCommands(clientId, guild.id),
+            { body: commands }
+        );
+        console.log(`Successfully registered commands for new guild ${guild.id}`);
+    } catch (error) {
+        console.error(`Failed to register commands for new guild ${guild.id}:`, error);
+    }
+});
+
+// Single autocomplete handler
+bot.client.on('interactionCreate', async interaction => {
+    if (!interaction.isAutocomplete()) return;
 
     try {
-        const messageMatch = embedContent.match(/\*\*Message:\*\* ([^\*]+)/);
-        const playerIdMatch = embedContent.match(/\*\*AlderonId:\*\* ([0-9]{3}-[0-9]{3}-[0-9]{3})/);
-        const playerNameMatch = embedContent.match(/\*\*PlayerName:\*\* ([^\*]+)/);
-
-        if (!messageMatch || !playerIdMatch) {
-            console.log('Failed to parse message or ID');
-            console.log('Full embed content:', embedContent);
-            return;
+        const { guildId } = interaction;
+        const focused = interaction.options.getFocused().toLowerCase();
+        
+        if (['restart', 'healall', 'spawn', 'addcommand'].includes(interaction.commandName)) {
+            const choices = getServerChoices(guildId);
+            const filtered = choices.filter(choice => 
+                choice.name.toLowerCase().includes(focused)
+            );
+            await interaction.respond(filtered.slice(0, 25));
+        } else if (interaction.commandName === 'removecommand') {
+            const choices = getCommandChoices(guildId);
+            const filtered = choices.filter(choice =>
+                choice.name.toLowerCase().includes(focused) ||
+                choice.value.toLowerCase().includes(focused)
+            );
+            await interaction.respond(filtered.slice(0, 25));
+        } else if (interaction.commandName === 'removeserver') {
+            const choices = getServerChoices(guildId);
+            const filtered = choices.filter(choice =>
+                choice.name.toLowerCase().includes(focused)
+            );
+            await interaction.respond(filtered.slice(0, 25));
         }
+    } catch (error) {
+        console.error('Autocomplete error:', error);
+    }
+});
 
-        const messageContent = messageMatch[1].trim();
-        const playerID = playerIdMatch[1];
-        const playerName = playerNameMatch ? playerNameMatch[1].trim() : '';
+// Single command handler
+bot.client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
 
-        if (!messageContent.startsWith('$')) return;
+    const { guildId } = interaction;
 
-        const trigger = messageContent.split(' ')[0].substring(1).toLowerCase();
+    try {
+        switch (interaction.commandName) {
+            case 'restart':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const serverName = interaction.options.getString('server');
+                    if (!serverName) {
+                        await interaction.editReply('Error: Server name is required');
+                        return;
+                    }
+                    await bot.executeCommand(guildId, serverName, 'quit');
+                    await interaction.editReply('Server restart initiated');
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
 
-        if (customCommands.has(trigger)) {
-            const commandData = customCommands.get(trigger);
-            let commandToExecute = commandData.command;
+            case 'healall':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const serverName = interaction.options.getString('server');
+                    if (!serverName) {
+                        await interaction.editReply('Error: Server name is required');
+                        return;
+                    }
+                    await bot.executeCommand(guildId, serverName, 'HealAllPlayers');
+                    await interaction.editReply('Healed all players');
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
 
-            commandToExecute = commandToExecute
-                .replace(/{ID}/g, playerID)
-                .replace(/{player}/g, playerName);
+            case 'addcommand':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const trigger = interaction.options.getString('trigger').toLowerCase();
+                    const command = interaction.options.getString('command');
+                    const serverName = interaction.options.getString('server');
+                    const whisperMessage = interaction.options.getString('whispermessage');
 
-            if (commandData.server === 'all') {
-                for (const serverName of Object.keys(config.servers)) {
+                    if (!config.commands[guildId]) {
+                        config.commands[guildId] = {};
+                    }
+
+                    config.commands[guildId][trigger] = {
+                        command: command,
+                        server: serverName || 'all',
+                        whisperMessage: whisperMessage || null
+                    };
+
+                    await updateConfig(config);
+
+                    const serverMsg = serverName ? `Server: ${serverName}` : 'All Servers';
+                    const whisperMsg = whisperMessage ? `\nWhisper: ${whisperMessage}` : '';
+                    await interaction.editReply(
+                        `Added custom command: $${trigger} -> ${command} (${serverMsg})${whisperMsg}`
+                    );
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'removecommand':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const trigger = interaction.options.getString('trigger').toLowerCase();
+                    
+                    if (!config.commands[guildId]?.[trigger]) {
+                        await interaction.editReply('Command not found');
+                        return;
+                    }
+
+                    const commandData = config.commands[guildId][trigger];
+                    delete config.commands[guildId][trigger];
+                    await updateConfig(config);
+
+                    const serverMsg = commandData.server === 'all' ? 'All Servers' : `Server: ${commandData.server}`;
+                    const whisperMsg = commandData.whisperMessage ? `\nWhisper: ${commandData.whisperMessage}` : '';
+                    await interaction.editReply(
+                        `Removed command: $${trigger} -> ${commandData.command} (${serverMsg})${whisperMsg}`
+                    );
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'listcommands':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const guildCommands = config.commands[guildId] || {};
+                    const commandList = Object.entries(guildCommands)
+                        .map(([trigger, data]) => {
+                            const serverMsg = data.server === 'all' ? 'All Servers' : `Server: ${data.server}`;
+                            const whisperMsg = data.whisperMessage ? `\n  Whisper: ${data.whisperMessage}` : '';
+                            return `$${trigger} -> ${data.command} (${serverMsg})${whisperMsg}`;
+                        })
+                        .join('\n\n');
+
+                    await interaction.editReply(commandList || 'No custom commands configured');
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'setchatchannel':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const channelId = interaction.options.getChannel('channel').id;
+                    config.chatChannelIds[guildId] = channelId;
+                    await updateConfig(config);
+                    await interaction.editReply(`Chat monitoring channel set to <#${channelId}>`);
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'setspawnchannel':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const channelId = interaction.options.getChannel('channel').id;
+                    config.spawnChannelIds[guildId] = channelId;
+                    await updateConfig(config);
+                    await interaction.editReply(`Spawn monitoring channel set to <#${channelId}>`);
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'spawn':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const location = interaction.options.getString('location');
+                    const serverName = interaction.options.getString('server');
+
+                    if (!config.spawnLocations[guildId]) {
+                        config.spawnLocations[guildId] = {};
+                    }
+                    
+                    config.spawnLocations[guildId][serverName] = location;
+                    await updateConfig(config);
+                    await interaction.editReply(`Spawn location set to ${location} for server ${serverName}`);
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            case 'addserver':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const serverName = interaction.options.getString('name');
+                    const host = interaction.options.getString('host');
+                    const port = interaction.options.getInteger('port');
+                    const password = interaction.options.getString('password');
+
+                    if (!config.servers[guildId]) {
+                        config.servers[guildId] = {};
+                    }
+
+                    if (config.servers[guildId][serverName]) {
+                        await interaction.editReply('A server with that name already exists in this Discord server.');
+                        return;
+                    }
+
+                    config.servers[guildId][serverName] = {
+                        host,
+                        port,
+                        password
+                    };
+
+                    await updateConfig(config);
+                    await bot.connect(guildId, serverName);
+                    await interaction.editReply(`Successfully added server: ${serverName}`);
+                } catch (error) {
+                    if (config.servers[guildId]?.[serverName]) {
+                        delete config.servers[guildId][serverName];
+                        await updateConfig(config);
+                    }
+                    await interaction.editReply(`Error adding server: ${error.message}`);
+                }
+                break;
+
+            case 'removeserver':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const serverName = interaction.options.getString('name');
+
+                    if (!config.servers[guildId]?.[serverName]) {
+                        await interaction.editReply('Server not found in configuration.');
+                        return;
+                    }
+
+                    const connectionKey = `${guildId}-${serverName}`;
+                    if (bot.rconConnections.has(connectionKey)) {
+                        bot.rconConnections.get(connectionKey).disconnect();
+                        bot.rconConnections.delete(connectionKey);
+                    }
+
+                    delete config.servers[guildId][serverName];
+                    await updateConfig(config);
+                    await interaction.editReply(`Successfully removed server: ${serverName}`);
+                } catch (error) {
+                    await interaction.editReply(`Error removing server: ${error.message}`);
+                }
+                break;
+
+            case 'listservers':
+                await interaction.deferReply({ ephemeral: true });
+                try {
+                    const guildServers = config.servers[guildId] || {};
+                    const serverList = Object.entries(guildServers)
+                        .map(([name, data]) => `${name}\n  Host: ${data.host}\n  Port: ${data.port}`)
+                        .join('\n\n');
+
+                    await interaction.editReply(serverList || 'No servers configured for this Discord server');
+                } catch (error) {
+                    await interaction.editReply(`Error: ${error.message}`);
+                }
+                break;
+
+            default:
+                await interaction.reply({ content: 'Unknown command', ephemeral: true });
+                break;
+        }
+    } catch (error) {
+        console.error('Command execution error:', error);
+        try {
+            if (interaction.deferred) {
+                await interaction.editReply({ content: `Error: ${error.message}`, ephemeral: true });
+            } else if (!interaction.replied) {
+                await interaction.reply({ content: `Error: ${error.message}`, ephemeral: true });
+            }
+        } catch (replyError) {
+            console.error('Error sending error response:', replyError);
+        }
+    }
+});
+
+// Single unified message handler for both chat and spawn monitoring
+bot.client.on('messageCreate', async message => {
+    const guildId = message.guild?.id;
+    if (!guildId) return;
+
+    // Chat monitoring
+    if (message.channelId === config.chatChannelIds[guildId]) {
+        if (!message.embeds?.[0]?.description) return;
+
+        const embedContent = message.embeds[0].description;
+        console.log('Received embed in chat monitoring channel:', embedContent);
+
+        try {
+            const messageMatch = embedContent.match(/\*\*Message:\*\* ([^\*]+)/);
+            const playerIdMatch = embedContent.match(/\*\*AlderonId:\*\* ([0-9]{3}-[0-9]{3}-[0-9]{3})/);
+            const playerNameMatch = embedContent.match(/\*\*PlayerName:\*\* ([^\*]+)/);
+
+            if (!messageMatch || !playerIdMatch) return;
+
+            const messageContent = messageMatch[1].trim();
+            const playerID = playerIdMatch[1];
+            const playerName = playerNameMatch ? playerNameMatch[1].trim() : '';
+
+            if (!messageContent.startsWith('$')) return;
+
+            const trigger = messageContent.split(' ')[0].substring(1).toLowerCase();
+            
+            if (config.commands?.[guildId]?.[trigger]) {
+                const commandData = config.commands[guildId][trigger];
+                let commandToExecute = commandData.command
+                    .replace(/{ID}/g, playerID)
+                    .replace(/{player}/g, playerName);
+
+                if (commandData.server === 'all') {
+                    for (const serverName of Object.keys(config.servers[guildId] || {})) {
+                        try {
+                            await bot.executeCommand(guildId, serverName, commandToExecute);
+                            if (commandData.whisperMessage) {
+                                const whisperCommand = `whisper ${playerID} ${commandData.whisperMessage}`
+                                    .replace(/{ID}/g, playerID)
+                                    .replace(/{player}/g, playerName);
+                                await bot.executeCommand(guildId, serverName, whisperCommand);
+                            }
+                        } catch (error) {
+                            console.error(`Error executing command on ${serverName} in guild ${guildId}:`, error);
+                        }
+                    }
+                } else {
                     try {
-                        await bot.executeCommand(serverName, commandToExecute);
+                        await bot.executeCommand(guildId, commandData.server, commandToExecute);
                         if (commandData.whisperMessage) {
                             const whisperCommand = `whisper ${playerID} ${commandData.whisperMessage}`
                                 .replace(/{ID}/g, playerID)
                                 .replace(/{player}/g, playerName);
-                            await bot.executeCommand(serverName, whisperCommand);
+                            await bot.executeCommand(guildId, commandData.server, whisperCommand);
                         }
                     } catch (error) {
-                        console.error(`Error executing command on ${serverName}:`, error);
+                        console.error(`Error executing command on ${commandData.server} in guild ${guildId}:`, error);
                     }
-                }
-            } else {
-                try {
-                    await bot.executeCommand(commandData.server, commandToExecute);
-                    if (commandData.whisperMessage) {
-                        const whisperCommand = `whisper ${playerID} ${commandData.whisperMessage}`
-                            .replace(/{ID}/g, playerID)
-                            .replace(/{player}/g, playerName);
-                        await bot.executeCommand(commandData.server, whisperCommand);
-                    }
-                } catch (error) {
-                    console.error(`Error executing command on ${commandData.server}:`, error);
                 }
             }
+        } catch (error) {
+            console.error('Error processing chat message:', error);
         }
-    } catch (error) {
-        console.error('Error processing chat message:', error);
     }
-});
 
-// Spawn monitoring
-bot.client.on('messageCreate', async message => {
-    if (message.channelId === config.spawnChannelId) {
+    // Spawn monitoring
+    if (message.channelId === config.spawnChannelIds[guildId]) {
         try {
             console.log('\n=== New Message in Spawn Channel ===');
-
-            if (!message.embeds || message.embeds.length === 0) {
-                console.log('No embeds found in message');
+            
+            if (!message.embeds?.[0]?.description) {
+                console.log('No valid embed found in message');
                 return;
             }
 
             const embedContent = message.embeds[0].description;
-            if (!embedContent) {
-                console.log('No description in embed');
-                return;
-            }
-
             console.log('\nEmbed Description:', embedContent);
 
-            // Updated pattern to match PlayerAlderonId
             const playerIdMatch = embedContent.match(/\*\*PlayerAlderonId:\*\* ([0-9]{3}-[0-9]{3}-[0-9]{3})/);
             if (!playerIdMatch) {
                 console.log('No PlayerAlderonId found in embed');
@@ -411,20 +755,20 @@ bot.client.on('messageCreate', async message => {
             const playerID = playerIdMatch[1];
             console.log('Found PlayerID:', playerID);
 
-            // Also get player name for logging purposes
             const playerNameMatch = embedContent.match(/\*\*PlayerName:\*\* ([^\*]+)/);
             const playerName = playerNameMatch ? playerNameMatch[1].trim() : 'Unknown Player';
 
-            for (const [serverName, spawnLocation] of Object.entries(config.spawnLocations)) {
+            const guildSpawnLocations = config.spawnLocations[guildId] || {};
+            for (const [serverName, spawnLocation] of Object.entries(guildSpawnLocations)) {
                 try {
                     if (spawnLocation) {
                         const teleportCommand = `teleport ${playerID} ${spawnLocation}`;
                         console.log(`\nExecuting command for ${playerName} on ${serverName}:`, teleportCommand);
-                        await bot.executeCommand(serverName, teleportCommand);
+                        await bot.executeCommand(guildId, serverName, teleportCommand);
                         console.log(`Successfully teleported ${playerName} (${playerID}) to ${spawnLocation} on ${serverName}`);
                     }
                 } catch (error) {
-                    console.error(`Failed to teleport player on ${serverName}:`, error);
+                    console.error(`Failed to teleport player on ${serverName} in guild ${guildId}:`, error);
                 }
             }
             console.log('=== End of Spawn Processing ===\n');
@@ -435,271 +779,32 @@ bot.client.on('messageCreate', async message => {
     }
 });
 
-bot.client.on('interactionCreate', async interaction => {
-    if (interaction.isAutocomplete()) {
-        if (interaction.commandName === 'removecommand') {
-            const choices = getCommandChoices();
-            const focused = interaction.options.getFocused().toLowerCase();
-
-            const filtered = choices.filter(choice =>
-                choice.name.toLowerCase().includes(focused) ||
-                choice.value.toLowerCase().includes(focused)
-            );
-
-            await interaction.respond(filtered.slice(0, 25));
-        }
-        else if (interaction.commandName === 'removeserver') {
-            const choices = getServerChoices();
-            const focused = interaction.options.getFocused().toLowerCase();
-
-            const filtered = choices.filter(choice =>
-                choice.name.toLowerCase().includes(focused)
-            );
-
-            await interaction.respond(filtered.slice(0, 25));
-        }
-        return;
-    }
-
-    if (!interaction.isCommand()) return;
-
-    try {
-        switch (interaction.commandName) {
-            case 'restart':
-                await interaction.deferReply({ ephemeral: true });
-                await bot.executeCommand(interaction.options.getString('server'), 'quit');
-                await interaction.editReply('Server restart initiated');
-                break;
-
-            case 'healall':
-                await interaction.deferReply({ ephemeral: true });
-                await bot.executeCommand(interaction.options.getString('server'), 'HealAllPlayers');
-                await interaction.editReply('Healed all players');
-                break;
-
-            case 'addcommand':
-                const trigger = interaction.options.getString('trigger').toLowerCase();
-                const command = interaction.options.getString('command');
-                const specificServer = interaction.options.getString('server');
-                const whisperMessage = interaction.options.getString('whispermessage');
-
-                customCommands.set(trigger, {
-                    command: command,
-                    server: specificServer || 'all',
-                    whisperMessage: whisperMessage || null
-                });
-
-                await saveCommands();
-
-                const serverMsg = specificServer ? `Server: ${specificServer}` : 'All Servers';
-                const whisperMsg = whisperMessage ? `\nWhisper: ${whisperMessage}` : '';
-                await interaction.reply({
-                    content: `Added custom command: $${trigger} -> ${command} (${serverMsg})${whisperMsg}`,
-                    ephemeral: true
-                });
-                break;
-
-            case 'removecommand':
-                const triggerToRemove = interaction.options.getString('trigger').toLowerCase();
-                if (customCommands.has(triggerToRemove)) {
-                    const commandData = customCommands.get(triggerToRemove);
-                    const serverMsg = commandData.server === 'all' ? 'All Servers' : `Server: ${commandData.server}`;
-                    const whisperMsg = commandData.whisperMessage ? `\n                     : ${commandData.whisperMessage}` : '';
-
-                    customCommands.delete(triggerToRemove);
-                    await saveCommands();
-
-                    await interaction.reply({
-                        content: `Removed command: $${triggerToRemove} -> ${commandData.command} (${serverMsg})${whisperMsg}`,
-                        ephemeral: true
-                    });
-                } else {
-                    await interaction.reply({
-                        content: `Command $${triggerToRemove} not found`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'listcommands':
-                const commandList = Array.from(customCommands.entries())
-                    .map(([trigger, data]) => {
-                        const serverMsg = data.server === 'all' ? 'All Servers' : `Server: ${data.server}`;
-                        const whisperMsg = data.whisperMessage ? `\n  Whisper: ${data.whisperMessage}` : '';
-                        return `$${trigger} -> ${data.command} (${serverMsg})${whisperMsg}`;
-                    })
-                    .join('\n\n');
-
-                await interaction.reply({
-                    content: commandList || 'No custom commands configured',
-                    ephemeral: true
-                });
-                break;
-
-            case 'setchatchannel':
-                await interaction.deferReply({ ephemeral: true });
-                const newChannelId = interaction.options.getChannel('channel').id;
-                config.chatChannelId = newChannelId;
-                try {
-                    await updateConfig(config);
-                    await interaction.editReply({
-                        content: `Successfully set chat monitoring channel to <#${newChannelId}>`,
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    console.error('Error setting chat channel:', error);
-                    await interaction.editReply({
-                        content: `Error setting chat channel: ${error.message}`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'setspawnchannel':
-                await interaction.deferReply({ ephemeral: true });
-                const newSpawnChannelId = interaction.options.getChannel('channel').id;
-                config.spawnChannelId = newSpawnChannelId;
-                try {
-                    await updateConfig(config);
-                    await interaction.editReply({
-                        content: `Successfully set spawn monitoring channel to <#${newSpawnChannelId}>`,
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    console.error('Error setting spawn channel:', error);
-                    await interaction.editReply({
-                        content: `Error setting spawn channel: ${error.message}`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'spawn':
-                const spawnLocation = interaction.options.getString('location');
-                const targetServer = interaction.options.getString('server');
-
-                // Initialize spawnLocations if it doesn't exist
-                if (!config.spawnLocations) {
-                    config.spawnLocations = {};
-                }
-
-                // Store the spawn location in config
-                config.spawnLocations[targetServer] = spawnLocation;
-
-                try {
-                    await updateConfig(config);
-                    await interaction.reply({
-                        content: `Spawn location set to ${spawnLocation} for server ${targetServer}`,
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    console.error('Error saving spawn location:', error);
-                    await interaction.reply({
-                        content: `Error saving spawn location: ${error.message}`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'addserver':
-                const serverName = interaction.options.getString('name');
-                const host = interaction.options.getString('host');
-                const port = interaction.options.getInteger('port');
-                const password = interaction.options.getString('password');
-
-                if (config.servers[serverName]) {
-                    await interaction.reply({
-                        content: 'A server with that name already exists.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
-                config.servers[serverName] = {
-                    host,
-                    port,
-                    password
-                };
-
-                try {
-                    await updateConfig(config);
-                    await bot.connect(serverName);
-
-                    await interaction.reply({
-                        content: `Successfully added server: ${serverName}`,
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    delete config.servers[serverName];
-                    await updateConfig(config);
-                    await interaction.reply({
-                        content: `Error adding server: ${error.message}`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'removeserver':
-                const serverToRemove = interaction.options.getString('name');
-
-                if (!config.servers[serverToRemove]) {
-                    await interaction.reply({
-                        content: 'Server not found in configuration.',
-                        ephemeral: true
-                    });
-                    return;
-                }
-
-                try {
-                    if (bot.rconConnections.has(serverToRemove)) {
-                        bot.rconConnections.get(serverToRemove).disconnect();
-                        bot.rconConnections.delete(serverToRemove);
-                    }
-
-                    delete config.servers[serverToRemove];
-                    await updateConfig(config);
-
-                    await interaction.reply({
-                        content: `Successfully removed server: ${serverToRemove}`,
-                        ephemeral: true
-                    });
-                } catch (error) {
-                    await interaction.reply({
-                        content: `Error removing server: ${error.message}`,
-                        ephemeral: true
-                    });
-                }
-                break;
-
-            case 'listservers':
-                const serverList = Object.entries(config.servers)
-                    .map(([name, data]) => `${name}\n  Host: ${data.host}\n  Port: ${data.port}`)
-                    .join('\n\n');
-
-                await interaction.reply({
-                    content: serverList || 'No servers configured',
-                    ephemeral: true
-                });
-                break;
-        }
-    } catch (error) {
-        console.error('Command execution error:', error);
-        if (interaction.deferred) {
-            await interaction.editReply({ content: `Error: ${error.message}` });
-        } else {
-            await interaction.reply({ content: `Error: ${error.message}`, ephemeral: true });
-        }
-    }
-});
-
+// Connection health check
 setInterval(async () => {
-    for (const [server] of bot.rconConnections) {
+    for (const [connectionKey, connection] of bot.rconConnections) {
+        const [guildId, serverName] = connectionKey.split('-');
         try {
-            await bot.executeCommand(server, 'listplayers');
+            await bot.executeCommand(guildId, serverName, 'listplayers');
         } catch (error) {
-            console.log(`Connection check failed for ${server}`);
+            console.log(`Connection check failed for ${serverName} in guild ${guildId}`);
+            try {
+                await bot.connect(guildId, serverName);
+                console.log(`Reconnected to ${serverName} in guild ${guildId}`);
+            } catch (reconnectError) {
+                console.error(`Failed to reconnect to ${serverName} in guild ${guildId}:`, reconnectError);
+            }
         }
     }
 }, 30000);
 
+// Error handlers
+bot.client.on('error', error => {
+    console.error('Discord client error:', error);
+});
+
+process.on('unhandledRejection', error => {
+    console.error('Unhandled promise rejection:', error);
+});
+
+// Start the bot
 bot.client.login(process.env.BOT_TOKEN);
